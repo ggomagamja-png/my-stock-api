@@ -2,6 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Query
 import os
+import re
 
 app = FastAPI()
 
@@ -14,45 +15,57 @@ def home():
     return {"message": "Stock API is running"}
 
 @app.get("/stock")
-def get_price(name: str = Query(None)):
+def get_stock_data(name: str = Query(None)):
     if not name:
-        return {"price": "0"}
+        return {"price": "0", "direction": "-", "change": "0", "rate": "0"}
 
     try:
-        # '종목명 주가'로 검색
         url = f"https://search.naver.com/search.naver?query={name}+주가"
         res = requests.get(url, headers=HEADERS, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # 가격을 찾기 위한 여러가지 후보 태그 (네이버가 수시로 바꿈)
-        # 1. 일반적인 주가 박스, 2. 모바일/통합검색 상단, 3. 기타 변형 구조
-        price_selectors = [
-            ".price_info strong", 
-            ".s0p_nm", 
-            ".n_price strong",
-            "div.stock_tlt strong",
-            ".info_area .price"
-        ]
+        # 네이버 주가 정보 박스 영역 찾기
+        container = soup.select_one(".price_info") or soup.select_one(".info_area")
         
-        price_text = ""
-        for selector in price_selectors:
-            tag = soup.select_one(selector)
-            if tag and tag.text.strip():
-                price_text = tag.text.strip()
-                break
+        if not container:
+            return {"price": "데이터없음", "direction": "-", "change": "0", "rate": "0"}
+
+        # 1. 현재 가격 (price)
+        price_raw = container.select_one("strong").text
+        price = re.sub(r'[^0-9]', '', price_raw)
+
+        # 2. 등락 정보 (기호, 변동액, 변동률이 섞여 있는 영역)
+        # 보통 '전일대비' 문구 옆에 위치함
+        change_info = container.select_one(".price_at") or container.select_one(".n_price")
         
-        if price_text:
-            # 숫자와 쉼표만 남기고 나머지(원, ▲, ▼ 등) 제거
-            # 숫자(0-9)와 콤마(,)만 골라내는 로직
-            import re
-            price_clean = re.sub(r'[^0-9,]', '', price_text)
-            price = price_clean.replace(",", "")
-            return {"name": name, "price": price}
-        else:
-            return {"name": name, "price": "데이터없음"}
+        # 기본값 설정
+        direction = "보합"
+        change_val = "0"
+        rate_val = "0"
+
+        if change_info:
+            full_text = change_info.text.strip() # 예: "상승 3,500 +1.45%"
+            
+            # 기호(방향) 추출
+            if "상승" in full_text or "▲" in full_text: direction = "▲"
+            elif "하락" in full_text or "▼" in full_text: direction = "▼"
+            
+            # 숫자들만 골라내기 (변동액과 변동률)
+            numbers = re.findall(r'[0-9.,]+', full_text)
+            if len(numbers) >= 2:
+                change_val = numbers[0].replace(",", "") # 변동액
+                rate_val = numbers[1] # 변동률
+
+        return {
+            "name": name,
+            "price": price,       # 현재가
+            "direction": direction, # 등락기호 (▲/▼/보합)
+            "change": change_val,  # 변동금액
+            "rate": rate_val       # 변동률 (%)
+        }
 
     except Exception as e:
-        return {"name": name, "price": f"에러:{str(e)}"}
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
