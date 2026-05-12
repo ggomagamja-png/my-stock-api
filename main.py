@@ -3,7 +3,6 @@ from bs4 import BeautifulSoup
 from fastapi import FastAPI, Query
 import os
 import re
-from urllib.parse import unquote
 
 app = FastAPI()
 
@@ -16,56 +15,60 @@ HEADERS = {
 def home():
     return {"status": "ok"}
 
-# 1. 경로를 /api/stock 으로 수정
-# 2. 인자 이름을 stock_name 으로 수정 (VBA 로그 기준)
-@app.get("/api/stock")
-def get_stock_data(stock_name: str = Query(None)):
-    if not stock_name:
+@app.get("/stock")
+def get_stock_data(name: str = Query(None)):
+    if not name:
         return {"price": "0", "direction": "-", "change": "0", "rate": "0"}
 
-    # URL 인코딩된 이름을 한글로 변환 (HLB%EC%9D%B4%EB%85%B8... -> HLB이노베이션)
-    decoded_name = unquote(stock_name)
-
     try:
-        url = f"https://search.naver.com/search.naver?query={decoded_name}+주가"
+        # 네이버 검색 결과 페이지 가져오기
+        url = f"https://search.naver.com/search.naver?query={name}+주가"
         res = requests.get(url, headers=HEADERS, timeout=5)
         html = res.text
         soup = BeautifulSoup(html, 'html.parser')
 
-        # 가격 정보 추출
+        # 1. 가격 정보 추출 (여러 영역 통합 검색)
+        # 가격이 들어있는 모든 태그 후보군을 훑습니다.
         price = "0"
         price_candidates = soup.select(".price_info strong, .s0p_nm, .n_price strong, .api_biz_stock_price")
         
         if price_candidates:
             price = re.sub(r'[^0-9]', '', price_candidates[0].text)
         else:
+            # 만약 태그를 못 찾았다면, 정규식으로 '가격' 단어 주변의 숫자를 강제로 찾습니다.
             match = re.search(r'현재가.*?([0-9,]{3,10})', html)
             if match:
                 price = match.group(1).replace(",", "")
 
-        # 등락 정보 추출
+        # 2. 등락 정보 추출
         direction = "보합"
         change = "0"
         rate = "0"
         
+        # 등락 정보가 포함된 텍스트 영역 (상승/하락 단어가 포함된 곳)
+        info_text = ""
         info_tags = soup.select(".price_at, .n_price, .api_biz_stock_diff")
         if info_tags:
             info_text = info_tags[0].text.strip()
-            if "상승" in info_text or "▲" in info_text:
+        
+        if info_text:
+            if "상승" in info_text or "▲" in info_text or "plus" in html.lower():
                 direction = "▲"
-            elif "하락" in info_text or "▼" in info_text:
+            elif "하락" in info_text or "▼" in info_text or "minus" in html.lower():
                 direction = "▼"
             
+            # 숫자(변동액, 변동률)만 추출
             nums = re.findall(r'[0-9.]+', info_text.replace(",", ""))
             if len(nums) >= 2:
                 change = nums[0]
                 rate = nums[1]
 
+        # 최종 결과 반환 (하나라도 데이터가 있으면 반환)
         if price == "0":
-            return {"name": decoded_name, "price": "데이터없음", "direction": "-", "change": "0", "rate": "0"}
+            return {"name": name, "price": "데이터없음", "direction": "-", "change": "0", "rate": "0"}
             
         return {
-            "name": decoded_name,
+            "name": name,
             "price": price,
             "direction": direction,
             "change": change,
@@ -77,6 +80,5 @@ def get_stock_data(stock_name: str = Query(None)):
 
 if __name__ == "__main__":
     import uvicorn
-    # 포트 번호는 환경 변수에 따라 유동적으로 설정 (기본값 10000)
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
