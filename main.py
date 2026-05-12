@@ -11,6 +11,7 @@ HEADERS = {
 }
 
 @app.get("/")
+@app.head("/")
 def home():
     return {"message": "Stock API is running"}
 
