@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 from fastapi import FastAPI, Query
 import os
 import re
-from urllib.parse import unquote  # 추가된 라이브러리
+from urllib.parse import unquote
 
 app = FastAPI()
 
@@ -16,22 +16,23 @@ HEADERS = {
 def home():
     return {"status": "ok"}
 
-@app.get("/stock")
-def get_stock_data(name: str = Query(None)):
-    if not name:
+# 1. 경로를 /api/stock 으로 수정
+# 2. 인자 이름을 stock_name 으로 수정 (VBA 로그 기준)
+@app.get("/api/stock")
+def get_stock_data(stock_name: str = Query(None)):
+    if not stock_name:
         return {"price": "0", "direction": "-", "change": "0", "rate": "0"}
 
-    # 핵심 수정: VBA에서 넘어온 인코딩된 한글(%EB%9D%BC 등)을 일반 한글로 변환
-    decoded_name = unquote(name)
+    # URL 인코딩된 이름을 한글로 변환 (HLB%EC%9D%B4%EB%85%B8... -> HLB이노베이션)
+    decoded_name = unquote(stock_name)
 
     try:
-        # 인코딩된 이름으로 검색 URL 생성
         url = f"https://search.naver.com/search.naver?query={decoded_name}+주가"
         res = requests.get(url, headers=HEADERS, timeout=5)
         html = res.text
         soup = BeautifulSoup(html, 'html.parser')
 
-        # 1. 가격 정보 추출
+        # 가격 정보 추출
         price = "0"
         price_candidates = soup.select(".price_info strong, .s0p_nm, .n_price strong, .api_biz_stock_price")
         
@@ -42,7 +43,7 @@ def get_stock_data(name: str = Query(None)):
             if match:
                 price = match.group(1).replace(",", "")
 
-        # 2. 등락 정보 추출
+        # 등락 정보 추출
         direction = "보합"
         change = "0"
         rate = "0"
@@ -76,5 +77,6 @@ def get_stock_data(name: str = Query(None)):
 
 if __name__ == "__main__":
     import uvicorn
+    # 포트 번호는 환경 변수에 따라 유동적으로 설정 (기본값 10000)
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
