@@ -5,13 +5,11 @@ import os
 
 app = FastAPI()
 
-# 네이버 차단 방지를 위한 최소한의 헤더
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
 @app.get("/")
-@app.head("/")
 def home():
     return {"message": "Stock API is running"}
 
@@ -21,24 +19,40 @@ def get_price(name: str = Query(None)):
         return {"price": "0"}
 
     try:
-        # 네이버 검색창에 '종목명 주가'로 검색
+        # '종목명 주가'로 검색
         url = f"https://search.naver.com/search.naver?query={name}+주가"
         res = requests.get(url, headers=HEADERS, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # 검색 결과 상단 '현재가' 영역 추출 (네이버 주가 검색 결과 전용 선택자)
-        # s0p_nm 이나 ._price_lst 등 가변적인 것 대신 가장 안정적인 클래스 사용
-        price_tag = soup.select_one(".price_info strong") or soup.select_one(".s0p_nm")
+        # 가격을 찾기 위한 여러가지 후보 태그 (네이버가 수시로 바꿈)
+        # 1. 일반적인 주가 박스, 2. 모바일/통합검색 상단, 3. 기타 변형 구조
+        price_selectors = [
+            ".price_info strong", 
+            ".s0p_nm", 
+            ".n_price strong",
+            "div.stock_tlt strong",
+            ".info_area .price"
+        ]
         
-        if price_tag:
-            # 숫자와 쉼표만 남기고 '원' 등 제거
-            price = price_tag.text.replace("원", "").replace(",", "").strip()
+        price_text = ""
+        for selector in price_selectors:
+            tag = soup.select_one(selector)
+            if tag and tag.text.strip():
+                price_text = tag.text.strip()
+                break
+        
+        if price_text:
+            # 숫자와 쉼표만 남기고 나머지(원, ▲, ▼ 등) 제거
+            # 숫자(0-9)와 콤마(,)만 골라내는 로직
+            import re
+            price_clean = re.sub(r'[^0-9,]', '', price_text)
+            price = price_clean.replace(",", "")
             return {"name": name, "price": price}
         else:
             return {"name": name, "price": "데이터없음"}
 
     except Exception as e:
-        return {"name": name, "price": "에러"}
+        return {"name": name, "price": f"에러:{str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn
