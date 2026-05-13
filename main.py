@@ -18,7 +18,7 @@ def home():
 @app.get("/stock")
 def get_stock_data(name: str = Query(None)):
     if not name:
-        return {"price": "0", "direction": "-", "change": "0", "rate": "0"}
+        return {"name": None, "price": "0"}
 
     try:
         # 네이버 검색 결과 페이지 가져오기
@@ -27,58 +27,33 @@ def get_stock_data(name: str = Query(None)):
         html = res.text
         soup = BeautifulSoup(html, 'html.parser')
 
-        # 1. 가격 정보 추출 (여러 영역 통합 검색)
-        # 가격이 들어있는 모든 태그 후보군을 훑습니다.
+        # 가격 정보 추출 (여러 영역 통합 검색)
         price = "0"
         price_candidates = soup.select(".price_info strong, .s0p_nm, .n_price strong, .api_biz_stock_price")
         
         if price_candidates:
+            # 숫자만 추출
             price = re.sub(r'[^0-9]', '', price_candidates[0].text)
         else:
-            # 만약 태그를 못 찾았다면, 정규식으로 '가격' 단어 주변의 숫자를 강제로 찾습니다.
+            # 태그 실패 시 정규식으로 '현재가' 키워드 주변 숫자 검색
             match = re.search(r'현재가.*?([0-9,]{3,10})', html)
             if match:
                 price = match.group(1).replace(",", "")
 
-        # 2. 등락 정보 추출
-        direction = "보합"
-        change = "0"
-        rate = "0"
-        
-        # 등락 정보가 포함된 텍스트 영역 (상승/하락 단어가 포함된 곳)
-        info_text = ""
-        info_tags = soup.select(".price_at, .n_price, .api_biz_stock_diff")
-        if info_tags:
-            info_text = info_tags[0].text.strip()
-        
-        if info_text:
-            if "상승" in info_text or "▲" in info_text or "plus" in html.lower():
-                direction = "▲"
-            elif "하락" in info_text or "▼" in info_text or "minus" in html.lower():
-                direction = "▼"
-            
-            # 숫자(변동액, 변동률)만 추출
-            nums = re.findall(r'[0-9.]+', info_text.replace(",", ""))
-            if len(nums) >= 2:
-                change = nums[0]
-                rate = nums[1]
-
-        # 최종 결과 반환 (하나라도 데이터가 있으면 반환)
+        # 최종 결과 반환
         if price == "0":
-            return {"name": name, "price": "데이터없음", "direction": "-", "change": "0", "rate": "0"}
+            return {"name": name, "price": "데이터없음"}
             
         return {
             "name": name,
-            "price": price,
-            "direction": direction,
-            "change": change,
-            "rate": rate
+            "price": price
         }
 
     except Exception as e:
-        return {"error": str(e), "price": "에러"}
+        return {"name": name, "price": "에러", "error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
+    # Render 등 클라우드 환경의 PORT 환경변수 대응
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
