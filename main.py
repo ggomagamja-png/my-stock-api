@@ -2,6 +2,7 @@ from fastapi import FastAPI
 import requests
 import logging
 
+
 app = FastAPI()
 
 all_items_cache = []
