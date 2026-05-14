@@ -1,8 +1,9 @@
 from fastapi import FastAPI
 import requests
+import re
 import logging
+from typing import List
 
-# 로그 설정 (Render 로그에서 상세히 보기 위함)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -10,66 +11,64 @@ app = FastAPI()
 
 all_items_cache = []
 
-def fetch_krx_list_via_naver():
-    """네이버 금융 API를 사용하여 국내 전 종목 리스트 수집"""
+def fetch_krx_via_html():
+    """네이버 금융 시가총액 페이지 등을 크롤링하여 국내 전 종목 리스트 수집"""
     global all_items_cache
     temp_list = []
-    
-    # 우선 테스트를 위해 키워드를 핵심적인 것 위주로 압축하여 속도를 높입니다.
-    keywords = [
-        "ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㅁ", "ㅂ", "ㅅ", "ㅇ", "ㅈ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ",
-        "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", 
-        "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"
-    ]
-    
     seen_codes = set()
-    logger.info("데이터 수집 시작...")
+    
+    # Render IP 차단을 피하기 위한 표준 브라우저 헤더
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    }
 
-    try:
-        for kw in keywords:
-            # st=1 (국내주식), r_format=json 설정 확인
-            url = f"https://ac.finance.naver.com/ac?q={kw}&q_enc=utf-8&st=1&frm=stock&r_format=json"
-            res = requests.get(url, timeout=5)
-            
-            if res.status_code != 200:
-                logger.error(f"API 호출 실패: {kw} (Status: {res.status_code})")
-                continue
+    # 코스피(0)와 코스닥(1) 시가총액 페이지 순회 (각 시장별 약 30페이지씩 존재)
+    # 효율성을 위해 상위 20페이지씩만 긁어도 대부분의 유효 종목이 포함됩니다.
+    for market_code in [0, 1]:
+        for page in range(1, 25):  
+            try:
+                url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={market_code}&page={page}"
+                res = requests.get(url, headers=headers, timeout=10)
                 
-            data = res.json()
-            items_group = data.get('items', [])
-            
-            if items_group and len(items_group) > 0:
-                items = items_group[0]
-                for item in items:
-                    # 네이버 응답 구조: [이름, 코드, ..., ..., 시장구분]
-                    name = item[0]
-                    code = item[1]
-                    market_type = str(item[4]) 
-                    
-                    if market_type == '1' and code not in seen_codes:
-                        if len(code) == 6 and code.isdigit():
-                            temp_list.append({"code": code, "name": name, "type": "KRX"})
-                            seen_codes.add(code)
-                            
+                if res.status_code != 200:
+                    continue
+                
+                # 정규표현식으로 종목코드와 종목명 추출
+                # <a href="/item/main.naver?code=005930" class="tltle">삼성전자</a>
+                matches = re.findall(r'href="/item/main\.naver\?code=(\d{6})".*?class="tltle">(.*?)</a>', res.text)
+                
+                if not matches:
+                    break # 더 이상 데이터가 없는 페이지면 중단
+                
+                for code, name in matches:
+                    if code not in seen_codes:
+                        temp_list.append({
+                            "code": code,
+                            "name": name,
+                            "type": "KOSPI" if market_code == 0 else "KOSDAQ"
+                        })
+                        seen_codes.add(code)
+                
+            except Exception as e:
+                logger.error(f"Error crawling market {market_code} page {page}: {e}")
+                continue
+
+    if temp_list:
         # 이름순 정렬
         all_items_cache = sorted(temp_list, key=lambda x: x['name'])
-        logger.info(f"수집 완료! 총 종목 수: {len(all_items_cache)}")
-        
-    except Exception as e:
-        logger.error(f"수집 중 치명적 오류: {str(e)}")
+        logger.info(f"수집 완료: 총 {len(all_items_cache)}개 종목 캐싱됨")
+    else:
+        logger.error("HTML 크롤링 결과가 0건입니다.")
 
 @app.on_event("startup")
 def startup_event():
-    fetch_krx_list_via_naver()
+    fetch_krx_via_html()
 
 @app.get("/krx-list")
 async def get_krx_step(start: int = 0, limit: int = 50):
-    global all_items_cache
-    
-    # 만약 리스트가 비어있다면 (서버 시작 시 실패했을 경우) 다시 시도
     if not all_items_cache:
-        logger.info("캐시가 비어있어 재수집을 시도합니다.")
-        fetch_krx_list_via_naver()
+        fetch_krx_via_html()
     
     total = len(all_items_cache)
     sliced_data = all_items_cache[start:start+limit]
