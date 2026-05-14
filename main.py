@@ -1,59 +1,54 @@
-import requests
-from bs4 import BeautifulSoup
 from fastapi import FastAPI, Query
-import os
-import re
+from pykrx import stock
+import logging
 
 app = FastAPI()
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
-}
+# 전역 변수로 데이터 캐싱
+all_items_cache = []
 
-@app.get("/")
-def home():
-    return {"status": "ok"}
-
-@app.get("/stock")
-def get_stock_data(name: str = Query(None)):
-    if not name:
-        return {"name": None, "price": "0"}
-
-    try:
-        # 네이버 검색 결과 페이지 가져오기
-        url = f"https://search.naver.com/search.naver?query={name}+주가"
-        res = requests.get(url, headers=HEADERS, timeout=5)
-        html = res.text
-        soup = BeautifulSoup(html, 'html.parser')
-
-        # 가격 정보 추출 (여러 영역 통합 검색)
-        price = "0"
-        price_candidates = soup.select(".price_info strong, .s0p_nm, .n_price strong, .api_biz_stock_price")
-        
-        if price_candidates:
-            # 숫자만 추출
-            price = re.sub(r'[^0-9]', '', price_candidates[0].text)
-        else:
-            # 태그 실패 시 정규식으로 '현재가' 키워드 주변 숫자 검색
-            match = re.search(r'현재가.*?([0-9,]{3,10})', html)
-            if match:
-                price = match.group(1).replace(",", "")
-
-        # 최종 결과 반환
-        if price == "0":
-            return {"name": name, "price": "데이터없음"}
+def refresh_stock_cache():
+    global all_items_cache
+    logging.info("KRX 종목 리스트 캐싱 시작...")
+    temp_list = []
+    
+    # 1. 주식 (KOSPI, KOSDAQ)
+    for mkt in ["KOSPI", "KOSDAQ"]:
+        tickers = stock.get_market_ticker_list(market=mkt)
+        for t in tickers:
+            # 주식은 이름 가져오기 속도가 중요하므로 일괄 처리 권장되나 
+            # 여기서는 안정성을 위해 개별 매핑
+            temp_list.append({"code": t, "name": stock.get_market_ticker_name(t), "type": "Stock"})
             
-        return {
-            "name": name,
-            "price": price
-        }
+    # 2. ETF
+    etf_tickers = stock.get_etf_ticker_list()
+    for t in etf_tickers:
+        temp_list.append({"code": t, "name": stock.get_etf_ticker_name(t), "type": "ETF"})
+        
+    # 3. ETN
+    etn_tickers = stock.get_etn_ticker_list()
+    for t in etn_tickers:
+        temp_list.append({"code": t, "name": stock.get_etn_ticker_name(t), "type": "ETN"})
+    
+    all_items_cache = temp_list
+    logging.info(f"캐싱 완료: 총 {len(all_items_cache)}개 종목")
 
-    except Exception as e:
-        return {"name": name, "price": "에러", "error": str(e)}
+# 앱 시작 시 한 번 실행
+@app.on_event("startup")
+def startup_event():
+    refresh_stock_cache()
 
-if __name__ == "__main__":
-    import uvicorn
-    # Render 등 클라우드 환경의 PORT 환경변수 대응
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+@app.get("/krx-list")
+async def get_krx_step(start: int = 0, limit: int = 50):
+    if not all_items_cache:
+        refresh_stock_cache()
+    
+    end = start + limit
+    sliced_data = all_items_cache[start:end]
+    
+    return {
+        "start": start,
+        "count": len(sliced_data),
+        "total_count": len(all_items_cache),
+        "items": sliced_data
+    }
