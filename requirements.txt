@@ -1,7 +1,3 @@
 fastapi
 uvicorn
 requests
-pykrx
-pandas
-yfinance
-curl_cffi
